@@ -1,19 +1,33 @@
 ﻿require('rootpath')();
 const express = require('express');
 const app = express();
-const bodyParser = require('body-parser');
 const cookieParser = require('cookie-parser');
 const cors = require('cors');
 const errorHandler = require('_middleware/error-handler');
+const config = require('_helpers/config');
+const securityHeaders = require('_middleware/security-headers');
+const db = require('_helpers/db');
 
-app.use(bodyParser.urlencoded({ extended: false }));
-app.use(bodyParser.json());
+app.use(express.urlencoded({ extended: false, limit: '100kb' }));
+app.use(express.json({ limit: '100kb' }));
 app.use(cookieParser());
+app.disable('x-powered-by');
+if (config.trustProxy) app.set('trust proxy', 1);
+app.use(securityHeaders);
 
 const router = express.Router()
 
-// allow cors requests from any origin and with credentials
-app.use(cors({ origin: (origin, callback) => callback(null, true), credentials: true }));
+app.use(cors({
+    origin(origin, callback) {
+        if (!origin || config.allowedOrigins.includes(origin)) return callback(null, true);
+        const error = new Error('Origin is not allowed');
+        error.status = 403;
+        return callback(error);
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Authorization', 'Content-Type', 'X-CSRF-Token']
+}));
 
 // api routes
 app.use('/accounts', require('./accounts/accounts.controller'));
@@ -28,15 +42,17 @@ app.use('/health', require('./_helpers/health'))
 app.use(errorHandler);
 
 process.on('uncaughtException', function (err) {
-    console.error(err)
-    //var stack = err.stack;
-    //you can also notify the err/stack to support via email or other APIs
+    console.error('Uncaught exception; shutting down', { name: err.name, message: err.message });
+    process.exit(1);
 });
 
 
 // start server
 //const port = process.env.NODE_ENV === 'production' ? (process.env.PORT || 80) : 4000;
 const port = process.env.PORT || 8080
-app.listen(port,"0.0.0.0", () => {
-    console.log('VOFAPI Server listening on port ' + port)
-})
+db.ready
+    .then(() => app.listen(port, '0.0.0.0', () => console.log('VOFAPI Server listening on port ' + port)))
+    .catch(err => {
+        console.error('Database initialization failed', { name: err.name, message: err.message });
+        process.exit(1);
+    });

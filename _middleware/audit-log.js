@@ -1,3 +1,6 @@
+const db = require('_helpers/db');
+const config = require('_helpers/config');
+
 module.exports = logMessage;
 async function logMessage(tableName, message, req){
     if (Object.keys(message).length !== 0) {
@@ -10,7 +13,7 @@ async function logMessage(tableName, message, req){
             audits.UserId = message.UserId;
         else
             audits.UserId = "--"; 
-	audits.ipaddress = req.headers['x-real-ip']; //req.ip;
+	    audits.ipaddress = config.trustProxy ? req.ip : req.socket.remoteAddress;
         await audits.save();
     }
 }

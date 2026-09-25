@@ -2,3 +2,14 @@ npm-debug.log
 node_modules
 Dockerfile
 .dockerignore
+.git
+.env
+.env.*
+config*.json
+jwk-meta.json
+jwk.json
+docs
+tickets
+spec
+src
+README.md

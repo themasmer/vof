@@ -6,6 +6,10 @@ const addItem = require('./routes/addItem');
 const updateItem = require('./routes/updateItem');
 const deleteItem = require('./routes/deleteItem');
 
+if (process.env.NODE_ENV === 'production') {
+    throw new Error('The legacy CRUD demo server must not be started in production');
+}
+
 app.use(express.json());
 app.use(express.static(__dirname + '/static'));
 

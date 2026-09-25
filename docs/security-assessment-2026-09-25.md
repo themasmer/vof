@@ -3,9 +3,9 @@
 ## Scope and method
 
 This assessment reviewed the Node/Express application source, configuration files,
-container build files, and production dependency tree.  It was a source and
-configuration review, not a penetration test.  No application code was changed
-as part of this assessment.
+container build files, and production dependency tree. It was a source and
+configuration review, not a penetration test. The implementation follow-up is
+tracked in `tickets/IMPLEMENTATION-STATUS.md`.
 
 ## Executive summary
 
@@ -72,6 +72,14 @@ scope immediately.
    are remediated and tested.
 3. Restrict administration access while SQL injection fixes are developed.
 4. Rebuild and redeploy only from a clean, secret-free image after SEC-011.
+
+## Implementation update
+
+The source-level controls described by SEC-001 through SEC-019 were implemented
+on 2026-09-25. Credential rotation, history/image purging, distributed
+rate-limiting/monitoring, base-image digest selection, and deployment-session
+invalidation require operator access and remain mandatory before release. See
+`docs/security-operations-required.md` and `tickets/IMPLEMENTATION-STATUS.md`.
 
 ## Reference guidance
 

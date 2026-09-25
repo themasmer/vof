@@ -5,11 +5,12 @@ const validateRequest = require('_middleware/validate-request');
 const authorize = require('_middleware/authorize')
 const Role = require('_helpers/role');
 const pitService = require('./client.service');
+const { requireCsrf } = require('_middleware/csrf');
 
 //session
-router.post('/createPit', authorize([Role.Admin]), createPitSchema, createPit);
-router.post('/setPitStatus', authorize([Role.Admin]), setPitStatusSchema,setPitStatus);
-router.post('/updatePitDetails', authorize([Role.Admin]), updatePitDetails);
+router.post('/createPit', authorize([Role.Admin]), requireCsrf, createPitSchema, createPit);
+router.post('/setPitStatus', authorize([Role.Admin]), requireCsrf, setPitStatusSchema,setPitStatus);
+router.post('/updatePitDetails', authorize([Role.Admin]), requireCsrf, updatePitDetailsSchema, updatePitDetails);
 router.get('/getPitById/:id', authorize([Role.Admin]), getPitById);
 router.get('/getAllPits', authorize([Role.Admin]), getAllPits);
 router.get('/getAllPitNames', authorize([Role.Admin]), getAllPitNames);
@@ -34,6 +35,14 @@ function updatePitDetails(req, res, next) {
     pitService.updatePit(req)
         .then(pit => res.json(pit))
         .catch(next);
+}
+
+function updatePitDetailsSchema(req, res, next) {
+    const schema = Joi.object({
+        Id: Joi.string().guid({ version: 'uuidv4' }).required(),
+        pitName: Joi.string().trim().min(1).max(100).required()
+    });
+    validateRequest(req, next, schema);
 }
 
 function getPitById(req, res, next) {

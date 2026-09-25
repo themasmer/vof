@@ -1,5 +1,4 @@
 const crypto = require("crypto");
-const DOMPurify = require('isomorphic-dompurify');
 const db = require('_helpers/db');
 const { Op } = require('sequelize');
 const logMessage = require('_middleware/audit-log');
@@ -34,7 +33,7 @@ async function setPitStatus(req) {
 
     if (Object.keys(message).length !== 0) {
         message["PitId"] = _pit.PitID;
-        logMessage('pits', message, req);
+        await logMessage('pits', message, req);
     }
     return { message: 'Pit Status Changed Successfully' };
 }
@@ -45,7 +44,7 @@ async function updatePit(req) {
         where: { PitID: params.Id }
     });
 
-    var pitName = DOMPurify.sanitize(params.pitName);
+    var pitName = params.pitName.trim();
 
     const _pit = JSON.parse(JSON.stringify(pit));
 
@@ -71,7 +70,7 @@ async function updatePit(req) {
 
     if (Object.keys(message).length !== 0) {
         message["PitId"] = _pit.PitID;
-        logMessage('pits', message, req);
+        await logMessage('pits', message, req);
     }
     return JSON.stringify({ message: 'Pit Updated Successfully' });
 }
@@ -87,50 +86,39 @@ async function getAllPitNames(req) {
 }
 
 async function getAllPits(params) {
-    var draw = params.draw;
-    var start = params.start || 0;
-    var length = params.length || 100;
-    var order_data = params.order;
-    var column_name = "";
-    var column_sort_order = "";
-
-    if (order_data === undefined) {
-        column_name = 'createdAt';
-        column_sort_order = 'desc';
-    } else {
-        var column_index = params.order[0]['column'];
-        column_name = params.columns[column_index]['data'];
-        column_sort_order = params.order[0]['dir'];
-    }
-
-    var search_value = (params.search && params.search['value']) || "";
-
-    var search_query = `
-     AND (pitName LIKE '%${search_value}%')`;
-
-    var Pit_Count_Query = `SELECT  COUNT(*) AS Total FROM pits`;
-
-    const _total_records = await sequelize.query(Pit_Count_Query);
-    const total_records = _total_records[0][0].Total;
-
-    var Pit_Search_Count_Query = `SELECT  COUNT(*) AS Total FROM pits WHERE 1 ${search_query}`;
-
-    const _total_records_with_filter = await sequelize.query(Pit_Search_Count_Query);
-    const total_records_with_filter = _total_records_with_filter[0][0].Total;
-
-    var Pits_Query = `SELECT  PitID as Id, pitName, isActive, ( SELECT Count(*) FROM pitusers  JOIN accounts ON accounts.UserId = pitusers.UserId  WHERE pitId = pits.PitID  AND accounts.isActive = true) AS PitUsers, ( SELECT GROUP_CONCAT(CONCAT(firstName,' ', lastName) SEPARATOR ',  ') FROM pitusers INNER JOIN accounts ON pitusers.userId = accounts.UserId WHERE pitusers.role = 2  AND pitId = pits.PitID AND accounts.isActive = true ) AS Moderators FROM pits WHERE 1 ${search_query} ORDER BY ${column_name} ${column_sort_order} LIMIT ${start}, ${length}`;
-    // if (params.limit !== undefined) {
-    //     Pits_Query = Pits_Query + " Limit " + params.limit;
-    // }
-    // if (params.offset !== undefined) {
-    //     Pits_Query = Pits_Query + " OFFSET " + params.offset;
-    // }
-
-    const [pits] = await sequelize.query(Pits_Query);
+    const draw = params.draw;
+    const start = Math.max(0, Number.parseInt(params.start, 10) || 0);
+    const length = Math.min(100, Math.max(1, Number.parseInt(params.length, 10) || 25));
+    const allowedColumns = ['createdAt', 'pitName', 'isActive'];
+    const requestedColumn = params.order?.[0] && params.columns?.[params.order[0].column]?.data;
+    const columnName = allowedColumns.includes(requestedColumn) ? requestedColumn : 'createdAt';
+    const sortOrder = params.order?.[0]?.dir === 'asc' ? 'ASC' : 'DESC';
+    const searchValue = String(params.search?.value || '').trim().slice(0, 100);
+    const where = searchValue ? { pitName: { [Op.like]: `%${searchValue}%` } } : {};
+    const totalRecords = await db.Pits.count();
+    const { count, rows } = await db.Pits.findAndCountAll({ where, order: [[columnName, sortOrder]], offset: start, limit: length });
+    const pits = await Promise.all(rows.map(async pit => {
+        const assignments = await db.PitUsers.findAll({ where: { pitId: pit.PitID } });
+        const activeAssignments = [];
+        for (const assignment of assignments) {
+            const account = await db.Account.findOne({ where: { UserId: assignment.userId, isActive: true } });
+            if (account) activeAssignments.push({ assignment, account });
+        }
+        return {
+            Id: pit.PitID,
+            pitName: pit.pitName,
+            isActive: pit.isActive,
+            PitUsers: activeAssignments.length,
+            Moderators: activeAssignments
+                .filter(({ assignment }) => assignment.role === 2)
+                .map(({ account }) => `${account.firstName} ${account.lastName}`)
+                .join(',  ')
+        };
+    }));
     return {
         'draw': draw,
-        'iTotalRecords': total_records,
-        'iTotalDisplayRecords': total_records_with_filter,
+        'iTotalRecords': totalRecords,
+        'iTotalDisplayRecords': count,
         'aaData': pits
     };
 }
@@ -157,7 +145,7 @@ async function createPit(req) {
     // save account
     await pit.save();
     var message = {"PitID": pit.PitID, "Action" : "Pit Created"};
-    logMessage('pit', message, req);
+    await logMessage('pit', message, req);
     // return pit.Id;
     return JSON.stringify({ message: 'Pit Created Successfully' });
 }

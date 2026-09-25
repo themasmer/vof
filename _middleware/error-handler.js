@@ -11,6 +11,7 @@ function errorHandler(err, req, res, next) {
             // jwt authentication error
             return res.status(401).json({ message: 'Unauthorized' });
         default:
-            return res.status(500).json({ message: err.message });
+            console.error('Unhandled request error', { name: err.name, message: err.message, path: req.path });
+            return res.status(err.status || 500).json({ message: err.status === 403 ? 'Forbidden' : 'An unexpected error occurred' });
     }
 }

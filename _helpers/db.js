@@ -1,10 +1,10 @@
-const config = require('config.json');
+const config = require('_helpers/config');
 const mysql = require('mysql2/promise');
 const { Sequelize } = require('sequelize');
 
 module.exports = db = {};
 
-initialize();
+db.ready = initialize();
 
 async function initialize() {
     // create db if it doesn't already exist
@@ -15,7 +15,7 @@ async function initialize() {
     password = process.env.DB_PASSWORD || password
     database = process.env.DB_DATABASE || database
 
-    console.log(`${database} ${host} ${password}`)
+    if (!/^[A-Za-z0-9_]+$/.test(database)) throw new Error('DB_DATABASE contains invalid characters');
     const connection = await mysql.createConnection({
           host: host,
           port : port,
@@ -23,9 +23,10 @@ async function initialize() {
           password: password
         });
     await connection.query(`CREATE DATABASE IF NOT EXISTS \`${database}\`;`);
+    await connection.end();
 
     // connect to db
-    global.sequelize = new Sequelize(database, user, password, {
+    db.sequelize = new Sequelize(database, user, password, {
         host: host,
         port: port,
         dialect: 'mysql', 
@@ -38,13 +39,14 @@ async function initialize() {
       },
     );
 
+    global.sequelize = db.sequelize;
     // init models and add them to the exported db object
-    db.Account = require('../accounts/account.model')(sequelize);
-    db.RefreshToken = require('../accounts/refresh-token.model')(sequelize);
-    db.Audits = require('../clients/audits.model')(sequelize);
-    db.Pits = require('../clients/pit.model')(sequelize);
-    db.Role = require('../accounts/role.model')(sequelize);
-    db.PitUsers = require('../clients/pitusers.model')(sequelize);
+    db.Account = require('../accounts/account.model')(db.sequelize);
+    db.RefreshToken = require('../accounts/refresh-token.model')(db.sequelize);
+    db.Audits = require('../clients/audits.model')(db.sequelize);
+    db.Pits = require('../clients/pit.model')(db.sequelize);
+    db.Role = require('../accounts/role.model')(db.sequelize);
+    db.PitUsers = require('../clients/pitusers.model')(db.sequelize);
 
     // define relationships
     db.Account.hasMany(db.RefreshToken, { onDelete: 'CASCADE' });
@@ -57,5 +59,5 @@ async function initialize() {
     db.PitUsers.belongsTo(db.Pits, { foreignKey: "pitId", targetKey:'PitID' });
 
     // sync all models with database
-    await sequelize.sync();
+    await db.sequelize.sync();
 }

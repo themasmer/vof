@@ -1,21 +1,12 @@
 {
-    "database": {
-        "host": "dummy",
-        "port": 3306,
-        "user": "dummy",
-        "password": "dummy",
-        "database": "dummy"
-    },
-    "secret": "q7OlcR6LbIMqCkvxAA41z8mY",
-    "company": "MIAX Sapphire Exchange",
-    "clientUrl": "https://www.sapphirevtf.miaxglobal.com",
-    "smtpOptions": {
-        "emailFrom": "Trading Operations <noreply_vtf@sapphirevtf.miaxglobal.com",
-        "host": "email-smtp.us-east-1.amazonaws.com",
-        "port": 587,
-        "auth": {
-            "user": "AKIAQZQSINOXGR36PNXI",
-            "pass":"BIfcs2B2r+4gM0b9wkTgbBL9IFgz9aMVvqmk9Jim8r3M"
-        }
-    }
+  "environment": "production",
+  "configurationSource": "environment variables or deployment secret manager",
+  "requiredConfiguration": [
+    "CLIENT_URL", "CORS_ORIGINS", "JWT_SECRET", "CSRF_SECRET",
+    "DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "DB_DATABASE",
+    "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "SMTP_FROM"
+  ],
+  "otp": { "allowedAttempts": 5, "validMinutes": 15 },
+  "passwordReset": { "validMinutes": 60 },
+  "session": { "validMinutes": 15, "refreshToken": 480 }
 }

@@ -6,21 +6,28 @@ const validateRequest = require('_middleware/validate-request');
 const authorize = require('_middleware/authorize')
 const Role = require('_helpers/role');
 const accountService = require('./account.service');
+const { validatePassword } = require('_helpers/password-policy');
+const config = require('_helpers/config');
+const rateLimit = require('_middleware/rate-limit');
+const { setCsrfCookie, clearCsrfCookie, requireCsrf, validateCsrf, requireTrustedOrigin } = require('_middleware/csrf');
+const REFRESH_COOKIE = config.cookieSecure ? '__Host-refreshToken' : 'refreshToken';
+
+const authRateLimit = rateLimit({
+    ...config.loginRateLimit,
+    keyGenerator: req => `${req.ip}:${String(req.body?.email || '').toLowerCase()}`
+});
 
 // routes
-router.post('/authenticate', authenticateSchema, authenticate);
-
-router.get('/authenticate', getauthenticate);
-
-router.post('/refresh-token', refreshToken);
-router.post('/revoke-token', authorize(), revokeTokenSchema, revokeToken);
-router.post('/register', authorize([Role.Admin]), registerSchema, register);
-router.post('/verify-email', verifyEmailSchema, verifyEmail);
-router.post('/forgot-password', forgotPasswordSchema, forgotPassword);
+router.post('/authenticate', requireTrustedOrigin, authRateLimit, authenticateSchema, authenticate);
+router.post('/refresh-token', requireTrustedOrigin, authRateLimit, refreshToken);
+router.post('/revoke-token', authorize(), requireCsrf, revokeTokenSchema, revokeToken);
+router.post('/register', authorize([Role.Admin]), requireCsrf, registerSchema, register);
+router.post('/verify-email', requireTrustedOrigin, authRateLimit, verifyEmailSchema, verifyEmail);
+router.post('/forgot-password', requireTrustedOrigin, authRateLimit, forgotPasswordSchema, forgotPassword);
 
 router.post('/validate-reset-token', validateResetTokenSchema, validateResetToken);
-router.post('/reset-password', resetPasswordSchema, resetPassword);
-router.post('/set-password', setPasswordSchema, setPassword);
+router.post('/reset-password', requireTrustedOrigin, authRateLimit, resetPasswordSchema, resetPassword);
+router.post('/set-password', requireTrustedOrigin, authRateLimit, setPasswordSchema, setPassword);
 // router.get('/', authorize(Role.Admin), getAll);
 
 router.get('/getAllUsers', authorize([Role.Admin]), getAll);  // Temporarily removed authentication
@@ -33,27 +40,24 @@ router.get('/getAllUserNames', authorize([Role.Admin]), getAllUserNames);
 //Added
 // router.get('/:email', authorize(), getUserInfo);
 router.get('/getById/:id', authorize([Role.Admin]), getById); //
-router.post('/updateUser', authorize([Role.Admin]), updateSchema, update); 
-router.post('/updateStatus', authorize([Role.Admin]), updateStatusSchema, updateStatus); 
+router.post('/updateUser', authorize([Role.Admin]), requireCsrf, updateSchema, update); 
+router.post('/updateStatus', authorize([Role.Admin]), requireCsrf, updateStatusSchema, updateStatus); 
 
-router.post('/getBlotter', authorize([Role.Admin]), getBlotter); 
-router.post('/getBlotterRecordings', authorize([Role.Admin]), getBlotterRecordings);
+router.post('/getBlotter', authorize([Role.Admin]), blotterSchema, getBlotter); 
+router.post('/getBlotterRecordings', authorize([Role.Admin]), blotterRecordingsSchema, getBlotterRecordings);
 
 // router.post('/getPractitionerInfo', authorize(), getPractitionerInfo);
 // router.get('/getparticipantName/:pid', authorize(), getparticipantName);
-router.post('/updateprofile', authorize([Role.Admin]), updateProfileschema, updateProfile);
-router.post('/verify-2fa', verify2FASchema, verify2FA);
+router.post('/updateprofile', authorize(), requireCsrf, updateProfileschema, updateProfile);
+router.post('/verify-2fa', requireTrustedOrigin, authRateLimit, verify2FASchema, verify2FA);
 router.get('/getprofile', authorize(), getprofile);
-router.get('/getJitsiToken/:id', authorize(), getJitsiToken);
-router.post('/changepassword', authorize(), changepassword);
+router.get('/getJitsiToken/:id', authorize(), uuidParam, getJitsiToken);
+router.post('/changepassword', authorize(), requireCsrf, changepassword);
 // router.post('/resetpwdfromQR', resetpwdfromQRSchema, resetpwdfromQR);
 // router.get('/getUserbyRole/:role', authorize(), getUserbyRole);
 // router.get('/getUserInfobyRole/:userid', authorize(), getUserInfobyRole);
 // router.post('/updateUserInfobyRole/:id', authorize(), updateUserInfobyRoleschema, updateUserInfobyRole);
 // router.get('/getIps/:clientId/:locationId', authorize(), getIps);
-
-//create hash pwd
-router.post('/createhashpassword', createhashpassword);
 
 // router.post('/sendmessageforExisitingUsers',  sendmessageforExisitingUsers);
 
@@ -75,16 +79,10 @@ module.exports = router;
 
 function authenticateSchema(req, res, next) {
     const schema = Joi.object({
-        email: Joi.string().required(),
-        password: Joi.string().required()
+        email: Joi.string().email().required(),
+        password: Joi.string().max(128).required()
     });
     validateRequest(req, next, schema);
-}
-
-function getauthenticate(req, res, next) {
-    const { email, password } = req.body;
-    const ipAddress = req.ip;
-    res.json(ipAddress);
 }
 
 function authenticate(req, res, next) {
@@ -98,15 +96,19 @@ function authenticate(req, res, next) {
         .catch(next);
 }
 
-function refreshToken(req, res, next) {
-    const token = req.cookies.refreshToken;
+async function refreshToken(req, res, next) {
+    const token = req.cookies[REFRESH_COOKIE];
     const ipAddress = req.ip;
-    accountService.refreshToken({ token, ipAddress })
-        .then(({ refreshToken, ...account }) => {
+    try {
+        const sessionHash = await accountService.getCsrfSession(token);
+        if (!validateCsrf(req, sessionHash)) return res.status(403).json({ message: 'Invalid CSRF token' });
+        const { refreshToken, csrfSessionHash, ...account } = await accountService.refreshToken({ token, ipAddress });
             setTokenCookie(res, refreshToken);
+            setCsrfCookie(res, csrfSessionHash);
             res.json(account);
-        })
-        .catch(next);
+    } catch (err) {
+        next(err);
+    }
 }
 
 function revokeTokenSchema(req, res, next) {
@@ -118,7 +120,7 @@ function revokeTokenSchema(req, res, next) {
 
 function revokeToken(req, res, next) {
     // accept token from request body or cookie
-    const token = req.body.token || req.cookies.refreshToken || req.auth.id;
+    const token = req.body.token || req.cookies[REFRESH_COOKIE] || req.auth.id;
     const ipAddress = req.ip;
 
     if (!token) return res.status(400).json({ message: 'Token is required' });
@@ -129,7 +131,11 @@ function revokeToken(req, res, next) {
     // }
 
     accountService.revokeToken(req)
-        .then(() => res.json({ message: 'Token revoked' }))
+        .then(() => {
+            clearTokenCookie(res);
+            clearCsrfCookie(res);
+            res.json({ message: 'Token revoked' });
+        })
         .catch(next);
 }
 
@@ -158,12 +164,6 @@ function registerSchema(req, res, next) {
 function register(req, res, next) {
     accountService.register(req)
         // .then(() => res.json({ message: 'Registration successful, please check your email for verification instructions' }))
-        .then(client => res.json(client))
-        .catch(next);
-}
-
-function createhashpassword(req, res, next) {
-    accountService.createhashpassword(req.body, req.ip)
         .then(client => res.json(client))
         .catch(next);
 }
@@ -216,7 +216,7 @@ function validateResetToken(req, res, next) {
 function setPasswordSchema(req, res, next) {
     const schema = Joi.object({
         token: Joi.string().required(),
-        password: Joi.string().min(4).required(),
+        password: Joi.string().min(12).max(128).custom(validatePassword).required(),
         confirmPassword: Joi.string().valid(Joi.ref('password')).required()
     });
     validateRequest(req, next, schema);
@@ -231,7 +231,7 @@ function setPassword(req, res, next) {
 function resetPasswordSchema(req, res, next) {
     const schema = Joi.object({
         token: Joi.string().required(),
-        password: Joi.string().min(4).required(),
+        password: Joi.string().min(12).max(128).custom(validatePassword).required(),
         confirmPassword: Joi.string().valid(Joi.ref('password')).required()
     });
     validateRequest(req, next, schema);
@@ -305,7 +305,7 @@ function createSchema(req, res, next) {
         firstName: Joi.string().required(),
         lastName: Joi.string().required(),
         email: Joi.string().email().required(),
-        password: Joi.string().min(4).required(),
+        password: Joi.string().min(12).max(128).custom(validatePassword).required(),
         confirmPassword: Joi.string().valid(Joi.ref('password')).required(),
         role: Joi.string().valid(Role.Admin, Role.User, Role.practitioner, Role.client).required()
     });
@@ -376,8 +376,9 @@ function verify2FASchema(req, res, next) {
 
 function verify2FA(req, res, next) {
     accountService.verify2FA(req)
-        .then(({ refreshToken, ...account }) => {
+        .then(({ refreshToken, csrfSessionHash, ...account }) => {
             setTokenCookie(res, refreshToken);
+            setCsrfCookie(res, csrfSessionHash);
             res.json(account);
         })
 	//.then(client => res.json(client))
@@ -407,6 +408,24 @@ function updateProfile(req, res, next) {
         .catch(next);
 }
 
+function blotterSchema(req, res, next) {
+    const schema = Joi.object({
+        searchDate: Joi.date().iso().required(),
+        searchPit: Joi.string().trim().max(100).allow('').default(''),
+        searchUser: Joi.string().trim().max(100).allow('').default('')
+    });
+    validateRequest(req, next, schema);
+}
+
+function blotterRecordingsSchema(req, res, next) {
+    const schema = Joi.object({
+        searchDate: Joi.date().iso().required(),
+        searchPitID: Joi.string().guid({ version: 'uuidv4' }).allow('').default(''),
+        searchPitName: Joi.string().trim().max(100).required()
+    });
+    validateRequest(req, next, schema);
+}
+
 function getBlotter(req, res, next) {
    const {searchDate, searchPit, searchUser } = req.body;
 
@@ -429,7 +448,7 @@ function getprofile(req, res, next) {
 }
 
 function getJitsiToken(req, res, next) {
-    pitID = req.params.id;
+    const pitID = req.params.id;
     accountService.getJitsiToken(req, pitID)
         .then(client => res.json(client))
         .catch(next);
@@ -465,10 +484,22 @@ function updateUserInfobyRole(req, res, next) {
 // helper functions
 
 function setTokenCookie(res, token) {
-    // create cookie with refresh token that expires in 7 days
     const cookieOptions = {
         httpOnly: true,
-        expires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+        secure: config.cookieSecure,
+        sameSite: config.cookieSameSite,
+        path: '/',
+        maxAge: config.session.refreshToken * 60 * 1000
     };
-    res.cookie('refreshToken', token, cookieOptions);
+    res.cookie(REFRESH_COOKIE, token, cookieOptions);
+}
+
+function uuidParam(req, res, next) {
+    const { error } = Joi.string().guid({ version: 'uuidv4' }).validate(req.params.id);
+    if (error) return res.status(400).json({ message: 'Invalid identifier' });
+    next();
+}
+
+function clearTokenCookie(res) {
+    res.clearCookie(REFRESH_COOKIE, { secure: config.cookieSecure, sameSite: config.cookieSameSite, path: '/' });
 }

@@ -4,11 +4,12 @@ import { v4 as uuidv4 } from "uuid";
 
 // read JWT and keys from the files where we stored them
 const jwk = JSON.parse(fs.readFileSync("./jwk.json").toString());
-const keys = JSON.parse(fs.readFileSync("./jwk-meta.json").toString());
+const privateKeyPem = process.env.JWK_PRIVATE_KEY;
 
 const generateJwt = async (subject, userName, secondsToExpire, algorithm = "RS256", keyId = jwk.kid, jwtId = uuidv4()) => {
     // import keys to jose objects
-    const privateKey = await jose.importPKCS8(keys.privateKeyPem, algorithm);
+    if (!privateKeyPem) throw new Error("JWK_PRIVATE_KEY must be configured");
+    const privateKey = await jose.importPKCS8(privateKeyPem.replace(/\\n/g, '\n'), algorithm);
     const publicKey = await jose.importSPKI(keys.publicKeyPem, algorithm);
 
     // get current time from epoch in seconds for "issued at" claim
@@ -40,9 +41,11 @@ const generateJwt = async (subject, userName, secondsToExpire, algorithm = "RS25
     return token;
 };
 
-const verifyJwt = async (token) => {
+const verifyJwt = async (token, algorithm = jwk.alg || "RS256") => {
     // import keys to jose objects
-    const publicKey = await jose.importSPKI(keys.publicKeyPem, algorithm);
+    const publicKeyPem = process.env.JWK_PUBLIC_KEY;
+    if (!publicKeyPem) throw new Error("JWK_PUBLIC_KEY must be configured");
+    const publicKey = await jose.importSPKI(publicKeyPem.replace(/\\n/g, '\n'), algorithm);
 
     try {
         const decryptedToken = await jose.jwtVerify(token, publicKey);
@@ -54,4 +57,3 @@ const verifyJwt = async (token) => {
 
 
 module.exports = generateJwt;
-

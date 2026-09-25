@@ -1,4 +1,4 @@
-const config = require('config.json');
+const config = require('_helpers/config');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const crypto = require("crypto");
@@ -8,12 +8,10 @@ const sendEmail = require('_helpers/send-email');
 const db = require('_helpers/db');
 const Role = require('_helpers/role');
 // const clientService = require('clients/client.service');
-const moment = require('moment');
-const JWT_SECRET = "koMab0r8xfz2";
 const fs = require('fs');
-const randomstring = require('randomstring');
 const logMessage = require('_middleware/audit-log');
-//  "pass": "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"
+const { escapeHtml } = require('_helpers/html');
+const { assertPasswordPolicy } = require('_helpers/password-policy');
 
 module.exports = {
     authenticate,
@@ -30,101 +28,39 @@ module.exports = {
     getAllActiveUsers,
     getAllUserNames,
     getById,
-    getUserInfo,
     create,
     update,
-    delete: _delete,
     // getparticipantName,
     getBlotter,
     getBlotterRecordings,
     getprofile,
     updateprofile,
-    getUserbyRole,
-    getUserInfoById,
-    updateUserInfobyRole,
     updateStatus,
     getJitsiToken,
     verify2FA,
+    getCsrfSession,
     // createhashpassword
 };
 
 async function authenticate(req) {
-    var { email, password, ipAddress } = req.body;
-    // console.log(email);
-    //  const account = await db.Account.scope('withHash').findOne({ where: { email } });
-    const account = await db.Account.scope('withHash').findOne({ where: { email: email } });
+    const { email, password } = req.body;
+    const account = await db.Account.scope('withHash').findOne({ where: { email } });
+    const validPassword = account && account.isVerified && account.isActive && await bcrypt.compare(password, account.passwordHash);
 
-    //account.updated = Date.now();
-    //account.sessionHash = randomTokenString();
-    //await account.save();
-
-    // if (!account || !account.isVerified || !(await bcrypt.compare(password, account.passwordHash))) {
-    //     throw 'Please check your credentials';
-    // }
-    if (account === null){
-        throw 'Invalid username or password';
-    } else if (account && !account.isVerified){
-        throw 'Account not verified';
-    }  else if (account && !account.isActive){
-        throw 'Account inactive';
-    } else  if (!(await bcrypt.compare(password, account.passwordHash))) {
-        account.failedAttempts = account.failedAttempts +1;
-        if (account.failedAttempts ==5) {
-            account.isActive = false;
-        }
-        await account.save();
-
+    // Deliberately use one response for unknown, inactive, unverified, and invalid-password accounts.
+    if (!validPassword) {
+        if (account) await db.Account.increment('failedAttempts', { by: 1, where: { id: account.id } });
         throw 'Invalid username or password';
     }
-    // Adding second token to db
-    account.updated = Date.now();
-    account.sessionHash = randomTokenString();
 
-    // // Generate OTP and save to DB
-    const regex_emails = /mjaynes|tcrux|vtfpentest/;
-    const need_fixed_otp = regex_emails.test(account.email)
-
-    let otp = "78123456"
-    if (!need_fixed_otp) {
-        otp = randomstring.generate({
-            length: 8,
-            charset: 'numeric'
-        });
-        send2faEmail(account, otp);
-    }
-
-    account.otp = otp;
+    const otp = crypto.randomInt(10000000, 100000000).toString();
+    account.otp = hashToken(otp);
     account.otpCreatedon = new Date();
     account.failedAttempts = 0;
-
     await account.save();
-    var message = { "User" : "Login requested" }
-    if (Object.keys(message).length !== 0) {
-        message["UserId"] = account.UserId;
-        logMessage('accounts', message, req);
-    }
-    if (need_fixed_otp) {
-        return { message : `Fixed/constant OTP for test accounts ${account.email}` };
-    }
-    else {
-        return { message : `An email has been sent to ${account.email} with OTP` };
-    }
-
-    // authentication successful so generate jwt and refresh tokens
-    const jwtToken = generateJwtToken(account);
-    const refreshToken = generateRefreshToken(account, ipAddress);
-
-    // save refresh token
-    await refreshToken.save();
-    // console.log(account);
-
-    // return basic details and tokens
-    return {
-        ...basicDetails(account),
-        jwtToken,
-        refreshToken: refreshToken.token,
-        //message : "User Alreay exists"
-    };
+    await send2faEmail(account, otp);
+    await logMessage('accounts', { UserId: account.UserId, Action: 'Login requested' }, req);
+    return { message: 'If the credentials are valid, a one-time passcode has been sent.' };
 }
 
 async function updateStatus(req) {
@@ -142,7 +78,10 @@ async function updateStatus(req) {
 
     Object.assign(account, params);
     account.updated = Date.now();
-    account.sessionHash = "";
+    if (!account.isActive) {
+        account.sessionHash = null;
+        await revokeAllRefreshTokens(account, req.ip);
+    }
     await account.save();
 
     var message = {};
@@ -153,7 +92,7 @@ async function updateStatus(req) {
 
     if (Object.keys(message).length !== 0) {
         message["UserId"] = account.UserId;
-        logMessage('accounts', message, req);
+        await logMessage('accounts', message, req);
     }
 
     return {message: "Updated successfully"};
@@ -181,7 +120,6 @@ async function getUserInfo(params) {
             return { locationName };
 
         });
-        console.log(values[0].locationName);
         locationName = values[0].locationName;
 
     }
@@ -238,7 +176,6 @@ async function updateUserInfobyRole(userid, params) {
             const oldaccount = await db.Account.findOne({ where: { email: params.email } });
             if (oldaccount) {
                 if (oldaccount.id != account.id) {
-                    console.log("email exists");
                     return "This email is already registered";
                 }
             }
@@ -254,7 +191,6 @@ async function updateUserInfobyRole(userid, params) {
         const oldaccount = await db.Account.findOne({ where: { phone: params.phone } });
         if (oldaccount) {
             if (oldaccount.id != account.id) {
-                console.log("phone exists");
                 return "This phone number is already registered";
             }
         }
@@ -272,7 +208,6 @@ async function updateUserInfobyRole(userid, params) {
 
 async function getUserbyRole(params) {
 
-    console.log(params.role);
 
 
     if (params.role == "User") {
@@ -289,7 +224,6 @@ async function getUserbyRole(params) {
             const { id, email, phone, role, clientName, locationName } = x;
             return { id, firstName, email, phone, role, clientName, locationName, recentdate };
         });
-        console.log(values);
         return values;
     }
     else if (params.role == "Client") {
@@ -341,9 +275,10 @@ async function getUserbyRole(params) {
 async function refreshToken({ token, ipAddress }) {
     const refreshToken = await getRefreshToken(token);
     const account = await refreshToken.getAccount();
+    if (!account || !account.isActive || !account.sessionHash) throw 'Invalid token';
 
     // replace old refresh token with a new one and save
-    const newRefreshToken = generateRefreshToken(account, ipAddress);
+    const { refreshToken: newRefreshToken, token: newToken } = generateRefreshToken(account, ipAddress);
     refreshToken.revoked = Date.now();
     refreshToken.revokedByIp = ipAddress;
     refreshToken.replacedByToken = newRefreshToken.token;
@@ -357,31 +292,23 @@ async function refreshToken({ token, ipAddress }) {
     return {
         ...basicDetails(account),
         jwtToken,
-        refreshToken: newRefreshToken.token
+        refreshToken: newToken,
+        csrfSessionHash: account.sessionHash
     };
 }
 
 async function revokeToken(req) {
-    var token = req.auth.id;
-    const account = await db.Account.findOne({where : { UserId : token  } });
+    const account = await db.Account.findOne({where : { UserId: req.auth.id, sessionHash: req.auth.sessionHash } });
     if (account) {
-        account.sessionHash = "";
+        account.sessionHash = null;
         await account.save();
-
-	var message = { "UserID": account.UserId, "Action": "User Logged out" };
-        logMessage('accounts', message, req);
+        await revokeAllRefreshTokens(account, req.ip);
+        await logMessage('accounts', { UserId: account.UserId, Action: 'User logged out' }, req);
     } 
-
-    // // revoke token and save
-    //refreshToken.revoked = Date.now();
-    //refreshToken.revokedByIp = ipAddress;
-    //await refreshToken.save();
 }
 
 async function register(req) {
     var params = req.body;
-    //console.log(req);
-    var origin = req.get('origin');
     if (params.email) {
         // validate
         if (await db.Account.findOne({
@@ -398,7 +325,6 @@ async function register(req) {
     }
     else {
         params.email = "";
-        console.log(params);
         // validate
         if (await db.Account.findOne({ where: { phone: params.phone } })) {
             return "Already Registered";
@@ -411,22 +337,25 @@ async function register(req) {
     //if(isFirstAccount)
     //account.role =  Role.Admin;
     account.UserId = crypto.randomUUID();
-    account.verificationToken = randomTokenString();
+    const verificationToken = randomTokenString();
+    account.verificationToken = hashToken(verificationToken);
+    account.resetTokenExpires = new Date(Date.now() + config.verification.validMinutes * 60 * 1000);
     // hash password
     account.passwordHash = ""; //await hash(params.password);
     // save account
     await account.save();
     var message = {"UserID": account.UserId, "Action" : "User Created"};
-    logMessage('accounts', message, req);
+    await logMessage('accounts', message, req);
     // send email or sms
-    return await sendVerificationEmail(account, origin);
+    return await sendVerificationEmail(account, verificationToken);
 }
 
 async function verifyEmail({ token }) {
-    const account = await db.Account.findOne({ where: { verificationToken: token } });
+    const account = await db.Account.findOne({ where: { verificationToken: hashToken(token), resetTokenExpires: { [Op.gt]: Date.now() } } });
     if (!account) throw 'Verification failed';
     account.verified = Date.now();
-    // account.verificationToken = "";
+    account.verificationToken = null;
+    account.resetTokenExpires = null;
     await account.save();
 }
 
@@ -438,7 +367,8 @@ async function changepassword(req) {
     const account = await getAccount(id);
     // hash password
     // account.passwordHash = await hash(params.password);
-    account.resetToken = randomTokenString();
+    const resetToken = randomTokenString();
+    account.resetToken = hashToken(resetToken);
     account.resetTokenExpires = new Date(Date.now() + validTill * 60 * 1000);
     // if (account.verificationToken == "new user")
     //     account.verificationToken = null;
@@ -446,10 +376,9 @@ async function changepassword(req) {
     await account.save();
     var message = { "UserID" : account.UserID, "Action": "Change Password Requested" }
     if (Object.keys(message).length !== 0) {
-        logMessage('accounts', message, req);
+        await logMessage('accounts', message, req);
     }
-    const origin = req.get('origin');
-    await sendPasswordResetEmail(account, origin);
+    await sendPasswordResetEmail(account, resetToken);
 }
 
 // async function createhashpassword() {
@@ -466,35 +395,30 @@ async function changepassword(req) {
 
 async function forgotPassword(req) {
     var email = req.body.email;
-    var origin = req.get('origin');
     const account = await db.Account.findOne({ where: { [Op.or]: [{ email: email }] } });
     const validTill = config.passwordReset.validMinutes;
 
 
-    if (account === null){
-        throw 'Account not found!';
-    } else if (account.isActive === false){
-        throw 'Account is not Active!';
-    }
-    // always return ok response to prevent email enumeration
-    if (!account) return;
+    // Always return the same public result to prevent account enumeration.
+    if (!account || account.isActive === false) return;
 
 
     // create reset token that expires after 60 mins (config.json)
-    account.resetToken = randomTokenString();
+    const resetToken = randomTokenString();
+    account.resetToken = hashToken(resetToken);
     account.resetTokenExpires = new Date(Date.now() + validTill * 60 * 1000);
     await account.save();
 
     var message = { "EmailID": email, "Action": "Forgot Password Requested" };
-    logMessage('accounts', message, req);
+    await logMessage('accounts', message, req);
     // send email
-    await sendPasswordResetEmail(account, origin);
+    await sendPasswordResetEmail(account, resetToken);
 }
 
 async function validateResetToken({ token }) {
     const account = await db.Account.findOne({
         where: {
-            resetToken: token,
+            resetToken: hashToken(token),
             resetTokenExpires: { [Op.gt]: Date.now() }
         }
     });
@@ -507,7 +431,8 @@ async function validateResetToken({ token }) {
 async function validateVerificationToken({ token }) {
     const account = await db.Account.findOne({
         where: {
-            verificationToken: token
+            verificationToken: hashToken(token),
+            resetTokenExpires: { [Op.gt]: Date.now() }
         }
     });
 
@@ -520,20 +445,26 @@ async function resetPassword({ token, password }) {
     const account = await validateResetToken({ token });
 
     // update password and remove reset token
+    await assertPasswordPolicy(password);
     account.passwordHash = await hash(password);
     account.passwordReset = Date.now();
     account.resetToken = null;
+    account.resetTokenExpires = null;
+    account.sessionHash = null;
     await account.save();
-    sendPasswordResetConfirmationEmail(account);
+    await revokeAllRefreshTokens(account);
+    await sendPasswordResetConfirmationEmail(account);
 }
 
 async function setPassword({ token, password }) {
     const account = await validateVerificationToken({ token });
 
     // update password and remove reset token
+    await assertPasswordPolicy(password);
     account.passwordHash = await hash(password);
     account.passwordReset = Date.now();
     account.verificationToken = null;
+    account.resetTokenExpires = null;
     await account.save();
 }
 
@@ -548,53 +479,35 @@ async function getAllActiveUsers(req) {
 }
 
 async function getAll(params) {
-    // const accounts = await db.Account.findAll({ });
-    // return accounts.map(x => basicDetails(x));
-    var draw = params.draw;
-    var start = params.start || 0;
-    var length = params.length || 100;
-    var order_data = params.order;
-    var column_name = "";
-    var column_sort_order = "";
-
-    if (order_data === undefined) {
-        column_name = 'createdAt';
-        column_sort_order = 'desc';
-    } else {
-        var column_index = params.order[0]['column'];
-        column_name = params.columns[column_index]['data'];
-        column_sort_order = params.order[0]['dir'];
-    }
-
-    var search_value = (params.search && params.search['value']) || "";
-
-    var search_query = `
-     AND (firstName LIKE '%${search_value}%'
-      OR lastName LIKE '%${search_value}%' 
-      OR email LIKE '%${search_value}%')`; 
-    //   OR customer_gender LIKE '%${search_value}%')`;
-
-    var Users_Count_Query = `SELECT  COUNT(*) AS Total FROM accounts`;
-
-    const _total_records = await sequelize.query(Users_Count_Query);
-    const total_records = _total_records[0][0].Total;
-
-    var Users_Search_Count_Query = `SELECT  COUNT(*) AS Total FROM accounts WHERE 1 ${search_query}`;
-
-    const _total_records_with_filter = await sequelize.query(Users_Search_Count_Query);
-    const total_records_with_filter = _total_records_with_filter[0][0].Total;
-
-    var Users_Query = `SELECT  UserId as id, firstName,  lastName, email, role, isActive, IF(!isnull(Verified) && isNull(verificationToken) , true, false ) As isVerified FROM accounts WHERE 1 ${search_query} ORDER BY ${column_name} ${column_sort_order} LIMIT ${start}, ${length}`;
-
-    // if (params.length !== undefined) {
-    //     Users_Query = Users_Query +  `LIMIT ${start} , ${length}`;
-    // }
-
-    const [accounts] = await sequelize.query(Users_Query);
+    const draw = params.draw;
+    const start = Math.max(0, Number.parseInt(params.start, 10) || 0);
+    const length = Math.min(100, Math.max(1, Number.parseInt(params.length, 10) || 25));
+    const allowedColumns = ['createdAt', 'firstName', 'lastName', 'email', 'role', 'isActive'];
+    const requestedColumn = params.order?.[0] && params.columns?.[params.order[0].column]?.data;
+    const columnName = allowedColumns.includes(requestedColumn) ? requestedColumn : 'createdAt';
+    const columnSortOrder = params.order?.[0]?.dir === 'asc' ? 'ASC' : 'DESC';
+    const searchValue = String(params.search?.value || '').trim().slice(0, 100);
+    const where = searchValue ? {
+        [Op.or]: ['firstName', 'lastName', 'email'].map(field => ({ [field]: { [Op.like]: `%${searchValue}%` } }))
+    } : {};
+    const totalRecords = await db.Account.count();
+    const { count, rows } = await db.Account.findAndCountAll({
+        where,
+        attributes: [['UserId', 'id'], 'firstName', 'lastName', 'email', 'role', 'isActive', 'verified', 'verificationToken'],
+        order: [[columnName, columnSortOrder]],
+        offset: start,
+        limit: length,
+        raw: true
+    });
+    const accounts = rows.map(account => ({
+        ...account,
+        isVerified: Boolean(account.verified && !account.verificationToken),
+        verificationToken: undefined
+    }));
     return {
         'draw': draw,
-        'iTotalRecords': total_records,
-        'iTotalDisplayRecords': total_records_with_filter,
+        'iTotalRecords': totalRecords,
+        'iTotalDisplayRecords': count,
         'aaData': accounts
     };
 }
@@ -610,6 +523,7 @@ async function create(params) {
         throw 'Email "' + params.email + '" is already registered';
     }
 
+    await assertPasswordPolicy(params.password);
     const account = new db.Account(params);
     account.verified = Date.now();
     account.updated = Date.now();
@@ -629,13 +543,15 @@ async function updateprofile(req) {
     const account = await getAccount(id);
     const _account = JSON.parse(JSON.stringify(account));
     var sendchangeemail = false;
+    let verificationToken;
     // copy params to account and save
     if (params.email && account.email !== params.email && await db.Account.findOne({ where: { email: params.email } })) {
         throw 'Email "' + params.email + '" is already taken';
     } else if (account.email !== params.email){
         sendchangeemail = true;
-        account.verificationToken = randomTokenString();
-        account.passwordHash = "";
+        verificationToken = randomTokenString();
+        account.verificationToken = hashToken(verificationToken);
+        account.resetTokenExpires = new Date(Date.now() + config.verification.validMinutes * 60 * 1000);
         account.verified = null;
     }
     Object.assign(account, params);
@@ -657,11 +573,15 @@ async function updateprofile(req) {
 
     if (Object.keys(message).length !== 0) {
         message["UserId"] = account.UserId;
-        logMessage('accounts', message, req);
+        await logMessage('accounts', message, req);
     }
 
-    if (sendchangeemail)
-        sendChangeOfEmail(account, req.get('origin'));
+    if (sendchangeemail) {
+        account.sessionHash = null;
+        await account.save();
+        await revokeAllRefreshTokens(account, req.ip);
+        await sendChangeOfEmail(account, verificationToken);
+    }
 
     return basicUserInfo(account);
 }
@@ -676,18 +596,14 @@ async function getBlotterRecordings(req, searchDate, searchPitID, searchPitName)
 
     //var files = fs.readdirSync(path).filter(fn => fn.includes(today));
     const dirs = fs.readdirSync(homepath).filter(function (file) {return fs.statSync(homepath+'/'+file).isDirectory();});
-    console.log(`video recordings looking for ${today}, ${pit_name} and scanning folders: <${dirs}>`)
     const scanPit = searchPitID==""?true:false;
 
     dirs.map(function (dir) {
         var path = `${homepath}/${dir}`;
-        console.log(`.. checking folder ${path}`)
 
         var files = fs.readdirSync(path).filter(fn => fn.includes(today));
         files.map(function (name) {
-            console.log(`    ....... scanning for file ${name}, and matching against pitName ${pit_name}`)
             if (scanPit || name.includes(pit_name)) {
-                console.log(`    ....... Matched file ${name}`)
 
                 const stats = fs.statSync(path + "/" + name);
                 const birthtime = new Date(stats.birthtime);
@@ -709,12 +625,10 @@ async function getBlotter(req, res, searchDate, searchPit, searchUser){
     const scanPit = searchPit==""?false:true;
     const scanUser = searchUser==""?false:true;
     const homepath = '/var/log/recordings/blotterLog';
-    console.log(searchDate + ',' +  searchPit +  ':' + scanPit + ',' + searchUser + ':' + scanUser);
 
     var today = Date.parse(searchDate);
     today = new Date(today).toISOString().slice(0, 10);
     const filename = `${homepath}/${today}.log`
-    console.log(`Parsing ${filename}`);
 
     if (scanPit)
         searchPit = decodeURI(searchPit).toLowerCase() + '@muc.meet.jitsi';
@@ -766,49 +680,30 @@ async function verify2FA(req) {
     const ALLOWED_ATTEMPTS = config.otp.allowedAttempts;
     const OTP_VALID_MINUTES = config.otp.validMinutes;
 
-    if (account === null) {
-        throw 'Invalid OTP!';
-    }
-    
-    if (account.otp !== params.otp) {
-        account.failedAttempts = account.failedAttempts + 1;
-        if (account.failedAttempts == ALLOWED_ATTEMPTS) {
-            account.isActive = false;
+    const staleOtp = new Date(Date.now() - (OTP_VALID_MINUTES * 60 * 1000));
+    const validOtp = account && account.isActive && account.otp && account.otpCreatedon >= staleOtp && safeTokenMatch(account.otp, hashToken(params.otp));
+    if (!validOtp) {
+        if (account) {
+            await db.Account.increment('failedAttempts', { by: 1, where: { id: account.id } });
         }
-        await account.save();
-        if (account.failedAttempts >= ALLOWED_ATTEMPTS)
-            throw 'Invalid OTP! You have exceeded allowed attempts, account has been locked';
-        else
-            throw `Invalid OTP, you have ${ALLOWED_ATTEMPTS - account.failedAttempts} attempts remaining!`;
+        throw 'Invalid one-time passcode';
     }
-    
-    // now otp is correct, check if it is stale
-    const staleotp = new Date(Date.now() - (OTP_VALID_MINUTES * 60 * 1000));
-    if (account.otpCreatedon < staleotp) {
-        throw 'OTP has expired. Please reinitalize login process!';
-    }
-    else {  // OTP was success 
-        const jwtToken = generateJwtToken(account);
-        const refreshToken = generateRefreshToken(account, req.ip);
 
-        await refreshToken.save();
-
-        account.failedAttempts = 0;
-        account.otp = '';
-        await account.save();
-
-        var message = { "User" : "Login Verified" }
-        if (Object.keys(message).length !== 0) {
-            message["UserId"] = account.UserId;
-            logMessage('accounts', message, req);
-        }
-
-        return {
-          ...basicDetails(account),
-          jwtToken,
-          refreshToken: refreshToken.token
-        };
-    }
+    const { refreshToken, token } = generateRefreshToken(account, req.ip);
+    account.sessionHash = randomTokenString();
+    const jwtToken = generateJwtToken(account);
+    account.failedAttempts = 0;
+    account.otp = null;
+    account.otpCreatedon = null;
+    await account.save();
+    await refreshToken.save();
+    await logMessage('accounts', { UserId: account.UserId, Action: 'Login verified' }, req);
+    return {
+        ...basicDetails(account),
+        jwtToken,
+        refreshToken: token,
+        csrfSessionHash: account.sessionHash
+    };
 
 }
 
@@ -822,18 +717,19 @@ async function getprofile(req){
 async function update(req) {
     var id = req.body.id;
     var params = req.body;
-    var origin = req.get('origin');
 
     const account = await getAccount(id);
     const _account = JSON.parse(JSON.stringify(account));
     var sendchangeemail = false;
+    let verificationToken;
     // validate (if email was changed)
     if (params.email && account.email !== params.email && await db.Account.findOne({ where: { email: params.email } })) {
         throw 'Email "' + params.email + '" is already taken';
     } else if (account.email !== params.email){
         sendchangeemail = true;
-        account.verificationToken = randomTokenString();
-        account.passwordHash = "";
+        verificationToken = randomTokenString();
+        account.verificationToken = hashToken(verificationToken);
+        account.resetTokenExpires = new Date(Date.now() + config.verification.validMinutes * 60 * 1000);
         account.verified = null;
     }
 
@@ -865,10 +761,14 @@ async function update(req) {
 
     if (Object.keys(message).length !== 0) {
         message["UserId"] = account.UserId;
-        logMessage('accounts', message, req);
+        await logMessage('accounts', message, req);
     }
-    if (sendchangeemail)
-        sendChangeOfEmail(account, origin);
+    if (sendchangeemail) {
+        account.sessionHash = null;
+        await account.save();
+        await revokeAllRefreshTokens(account, req.ip);
+        await sendChangeOfEmail(account, verificationToken);
+    }
     return basicDetails(account);
 }
 
@@ -876,7 +776,6 @@ async function _delete(id) {
     const account = await getAccount(id);
     if (account) {
         if (account.role == "User") {
-            console.log(account.role);
             await sequelize.query("delete from userlocations where accountId =  " + id);
             await sequelize.query("delete from roles where accountId =  " + id);
             await sequelize.query("delete from sessions where patientId =  " + id);
@@ -884,7 +783,6 @@ async function _delete(id) {
             return "User is deleted successfully";
         }
         else {
-            console.log("it is " + account.role);
             var msg = account.role + " user cannot be deleted";
             return msg;
         }
@@ -928,13 +826,14 @@ async function getAccount(id) {
 //     return age;
 // }
 async function getRefreshToken(token) {
-    const refreshToken = await db.RefreshToken.findOne({ where: { token } });
+    if (!token) throw 'Invalid token';
+    const refreshToken = await db.RefreshToken.findOne({ where: { token: hashToken(token) } });
     if (!refreshToken || !refreshToken.isActive) throw 'Invalid token';
     return refreshToken;
 }
 
 async function hash(password) {
-    return await bcrypt.hash(password, 10);
+    return await bcrypt.hash(password, 12);
 }
 
 /**
@@ -947,30 +846,59 @@ function between(min, max) {
 }
 
 function generateJwtToken(account) {
-    // create a jwt token containing the account id that expires in 15 minutes
-    return jwt.sign({ id: account.UserId, fn: account.firstName, ln: account.lastName, email: account.email, role: account.role, 
-                      sessionHash:account.sessionHash, expires: new Date(Date.now() + config.session.validMinutes  * 60 * 1000) }, config.secret, { });
+    return jwt.sign(
+        { id: account.UserId, fn: account.firstName, ln: account.lastName, email: account.email, role: account.role, sessionHash: account.sessionHash },
+        config.jwtSecret,
+        { expiresIn: config.session.validMinutes * 60, issuer: config.jwtIssuer, audience: config.jwtAudience }
+    );
 
 }
 
 function generateRefreshToken(account, ipAddress) {
-    // create a refresh token that expires in 7 days
-    return new db.RefreshToken({
-        accountId: account.id,
-        token: randomTokenString(),
-        expires: new Date(Date.now() + config.session.refreshToken * 60 * 1000),
-        createdByIp: ipAddress
-    });
+    const token = randomTokenString();
+    return {
+        token,
+        refreshToken: new db.RefreshToken({
+            accountId: account.id,
+            token: hashToken(token),
+            expires: new Date(Date.now() + config.session.refreshToken * 60 * 1000),
+            createdByIp: ipAddress
+        })
+    };
+}
+
+async function getCsrfSession(token) {
+    const refreshToken = await getRefreshToken(token);
+    const account = await refreshToken.getAccount();
+    if (!account || !account.isActive || !account.sessionHash) throw 'Invalid token';
+    return account.sessionHash;
 }
 
 function randomTokenString() {
-    return crypto.randomBytes(10).toString('hex');
+    return crypto.randomBytes(32).toString('base64url');
+}
+
+function hashToken(token) {
+    return crypto.createHash('sha256').update(token).digest('base64url');
+}
+
+function safeTokenMatch(left, right) {
+    const leftBuffer = Buffer.from(left);
+    const rightBuffer = Buffer.from(right);
+    return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+async function revokeAllRefreshTokens(account, ipAddress) {
+    await db.RefreshToken.update(
+        { revoked: new Date(), revokedByIp: ipAddress || null },
+        { where: { accountId: account.id, revoked: null } }
+    );
 }
 
 function basicDetails(account) {
 
-    const { UserId : id, title, firstName, lastName, email, role, created, updated, isActive, isVerified, phone, verificationToken } = account;
-    return { id, title, firstName, lastName, email, role, created, updated, isActive, isVerified, phone, verificationToken };
+    const { UserId : id, title, firstName, lastName, email, role, created, updated, isActive, isVerified, phone } = account;
+    return { id, title, firstName, lastName, email, role, created, updated, isActive, isVerified, phone };
 }
 async function basicUserInfo(account) {
 
@@ -981,162 +909,94 @@ async function basicUserInfo(account) {
     return { id, title, firstName, lastName, email, role, phone };
 }
 
-async function sendChangeOfEmail(account, origin) {
-    let message;
-    let verifyUrl;
-    if (origin) {
-	if (account.role === 1)
-            verifyUrl = `${origin}/verifyemail.html?token=${account.verificationToken}`;
-        else 
-            verifyUrl = `${config.clientUrl}/verifyemail.html?token=${account.verificationToken}`;
-        message = `<p>An account has been created with this email address. Please click the link below to set your password.</p>
-                   <p><a href="${verifyUrl}">${verifyUrl}</a></p>`;
-
-        // messagesms = "A VOF Plus account has been created using this phone number. Your password has been set to  1234. please follow this link to verify your number. " + verifyUrl + "  You can change your password upon signing in for the first time. \n" +
-        //     "        \n Se ha creado una cuenta de VOF Plus utilizando este número de teléfono. Su contraseña se ha establecido en 1234. Siga este enlace para reservar sus citas en la ubicación de site Whiteline " + verifyUrl + "  Puedes cambiar tu contraseña al iniciar sesión por primera vez.";
-    }
-
-    var fileContents = fs.readFileSync('./emailtemplates/User_Email_Update_Email_Template.htm').toString();
-    fileContents = fileContents.replace(/{{first_name}}/g, account.firstName);
-    fileContents = fileContents.replace(/{{verification_link}}/g, verifyUrl);
-    fileContents = fileContents.replace(/{{Your_Company}}/g, config.company);
-    message = fileContents;
-   
-    //TODO
-    if (account.email !== "") {
-        await sendEmail({
-            to: account.email,
-            subject: 'VOF Verify Login',
-            html: `${message}`
-        });
-    }
-    
-    return "successful,verification message sent";
+async function sendChangeOfEmail(account, token) {
+    return sendVerificationMessage(account, token, './emailtemplates/User_Email_Update_Email_Template.htm');
 }
 
-async function sendVerificationEmail(account, origin) {
-    let message;
-    let verifyUrl;
-    if (origin) {
-	if (account.role === '1')
-            verifyUrl = `${origin}/verifyemail.html?token=${account.verificationToken}`;
-        else
-            verifyUrl = `${config.clientUrl}/verifyemail.html?token=${account.verificationToken}`;
-        message = `<p>An account has been created with this email address. Please click the link below to set your password.</p>
-                   <p><a href="${verifyUrl}">${verifyUrl}</a></p>`;
-
-        // messagesms = "A VOF Plus account has been created using this phone number. Your password has been set to  1234. please follow this link to verify your number. " + verifyUrl + "  You can change your password upon signing in for the first time. \n" +
-        //     "        \n Se ha creado una cuenta de VOF Plus utilizando este número de teléfono. Su contraseña se ha establecido en 1234. Siga este enlace para reservar sus citas en la ubicación de site Whiteline " + verifyUrl + "  Puedes cambiar tu contraseña al iniciar sesión por primera vez.";
-    }
-
-    var fileContents = fs.readFileSync('./emailtemplates/User_Account_Creation_Email_Template.htm').toString();
-    fileContents = fileContents.replace(/{{first_name}}/g, account.firstName);
-    fileContents = fileContents.replace(/{{verification_link}}/g, verifyUrl);
-    fileContents = fileContents.replace(/{{Your_Company}}/g, config.company);
-    message = fileContents;
-    //TODO
-    if (account.email !== "") {
-        await sendEmail({
-            to: account.email,
-            subject: 'VOF Verify Login',
-            html: `${message}`
-        });
-    }
-    return "successful,verification message sent";
+async function sendVerificationEmail(account, token) {
+    return sendVerificationMessage(account, token, './emailtemplates/User_Account_Creation_Email_Template.htm');
 }
 
-async function sendPasswordResetEmail(account, origin) {
-    let message;
-    let resetUrl;
-    if (origin) {
-        resetUrl = `${origin}/resetforgotpassword.html?token=${account.resetToken}`;
-        // message = `<p>Please click the below link to reset your password, the link will be valid for 1 day:</p>
-        //            <p><a href="${resetUrl}">${resetUrl}</a></p>`;
+async function sendVerificationMessage(account, token, templatePath) {
+    const verifyUrl = clientTokenUrl('/verifyemail.html', token);
+    const message = renderEmailTemplate(templatePath, {
+        first_name: account.firstName,
+        verification_link: verifyUrl,
+        Your_Company: config.company
+    });
+    if (account.email) await sendEmail({ to: account.email, subject: 'VOF Verify Login', html: message });
+    return 'verification message sent';
+}
 
-    } else {
-        message = `<p>Please use the below token to reset your password with the <code>/account/reset-password</code> api route:</p>
-                   <p><code>${account.resetToken}</code></p>`;
-    }
+async function sendPasswordResetEmail(account, token) {
+    const resetUrl = clientTokenUrl('/resetforgotpassword.html', token);
+    const message = renderEmailTemplate('./emailtemplates/User_Password_Reset_Email_Template.htm', {
+        first_name: account.firstName,
+        reset_link: resetUrl,
+        Your_Company: config.company
+    });
+    if (account.email) await sendEmail({ to: account.email, subject: 'Reset Password Email', html: message });
+    return 'message sent';
+}
 
-    var fileContents = fs.readFileSync('./emailtemplates/User_Password_Reset_Email_Template.htm').toString();
-    fileContents = fileContents.replace(/{{first_name}}/g, account.firstName);
-    fileContents = fileContents.replace(/{{reset_link}}/g, resetUrl);
-    fileContents = fileContents.replace(/{{Your_Company}}/g, config.company);
-    message = fileContents;
-    if (account.email !== "") {
-        await sendEmail({
-            to: account.email,
-            subject: 'Reset Password Email',
-            html: `${message}`
-        });
+function clientTokenUrl(pathname, token) {
+    const url = new URL(pathname, config.clientUrl);
+    url.searchParams.set('token', token);
+    return url.toString();
+}
+
+function renderEmailTemplate(templatePath, values) {
+    let template = fs.readFileSync(templatePath).toString();
+    for (const [key, value] of Object.entries(values)) {
+        template = template.replace(new RegExp(`{{${key}}}`, 'g'), escapeHtml(value));
     }
-    return "message sent";
+    return template;
 }
 
 async function sendPasswordResetConfirmationEmail(account) {
-    let message;
-    let resetUrl;
-
-    var fileContents = fs.readFileSync('./emailtemplates/Password_Reset_Success_Email_Template.htm').toString();
-    fileContents = fileContents.replace(/{{first_name}}/g, account.firstName);
-    fileContents = fileContents.replace(/{{Your_Company}}/g, config.company);
-    message = fileContents;
-    if (account.email !== "") {
-        await sendEmail({
-            to: account.email,
-            subject: 'Password Reset Successful',
-            html: `${message}`
-        });
-    }
-    return "message sent";
+    const message = renderEmailTemplate('./emailtemplates/Password_Reset_Success_Email_Template.htm', {
+        first_name: account.firstName,
+        Your_Company: config.company
+    });
+    if (account.email) await sendEmail({ to: account.email, subject: 'Password Reset Successful', html: message });
+    return 'message sent';
 }
 
 async function send2faEmail(account, otp) {
-    let message;
-    
-    var fileContents = fs.readFileSync('./emailtemplates/Login_Otp_Email_Template.htm').toString();
-    fileContents = fileContents.replace(/{{first_name}}/g, account.firstName);
-    fileContents = fileContents.replace(/{{user_otp}}/g, otp);
-    fileContents = fileContents.replace(/{{Your_Company}}/g, config.company);
-    message = fileContents;
-    
-    if (account.email !== "") {
-        await sendEmail({
-            to: account.email,
-            subject: 'MIAX Sapphire Options Virtual Trading Floor - One-time Passcode',
-            html: `${message}`
-        });
-    }
-    return "message sent";
+    const message = renderEmailTemplate('./emailtemplates/Login_Otp_Email_Template.htm', {
+        first_name: account.firstName,
+        user_otp: otp,
+        Your_Company: config.company
+    });
+    if (account.email) await sendEmail({ to: account.email, subject: 'One-time passcode', html: message });
+    return 'message sent';
 }
 
 async function getJitsiToken(req, pitID) {
-    var id = req.auth.id;
+    const id = req.auth.id;
     const account = await getAccount(id);
+    const pitUser = await db.PitUsers.findOne({ where: { pitId: pitID, userId: id } });
+    const pit = await db.Pits.findOne({ where: { PitID: pitID, isActive: true } });
+    if (!account || !pitUser || !pit) throw 'Unauthorized';
 
-    const _pituser = await sequelize.query(`SELECT userId, pitId, role FROM pitusers WHERE pitId=${sequelize.escape(pitID)} AND userId=${sequelize.escape(id)}`,  {      type: sequelize.QueryTypes.SELECT});
-
-    //console.log(_pituser);
-
-    if (id) {
-        const _role = _pituser[0].role;
-	console.log(_role);
-	console.log(_role<=2?true:false);
-        var token = {};
-        user = {"avatar":"", "name":account.firstName + ' ' + account.lastName,"email":account.email, "lobby_bypass": "true", id:id, pitID:pitID};
-        token.context = {"user":user};
-        token.moderator = _role<=2?true:false;
-        token.aud = "jitsi";
-        token.iss = "vofmeet";
-        token.sub = "meet.jitsi";
-        token.room = "*";
-        token.exp = Math.floor(Date.now() / 1000)+ 14400;
-        token.nbf = Math.floor(Date.now() / 1000);
-
-        return jwt.sign(token, JWT_SECRET);
-     }
-     else {
-        return "error";
-     }
+    const now = Math.floor(Date.now() / 1000);
+    const token = {
+        context: {
+            user: {
+                avatar: '',
+                name: `${account.firstName} ${account.lastName}`,
+                email: account.email,
+                id
+            }
+        },
+        moderator: pitUser.role <= 2,
+        aud: 'jitsi',
+        iss: 'vofmeet',
+        sub: 'meet.jitsi',
+        room: pit.PitID,
+        exp: now + 15 * 60,
+        nbf: now
+    };
+    return jwt.sign(token, config.jitsiSecret, { algorithm: 'HS256' });
 }
 
