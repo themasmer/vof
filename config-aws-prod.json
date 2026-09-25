@@ -1,0 +1,21 @@
+{
+    "database": {
+        "host": "dummy",
+        "port": 3306,
+        "user": "dummy",
+        "password": "dummy",
+        "database": "dummy"
+    },
+    "secret": "q7OlcR6LbIMqCkvxAA41z8mY",
+    "company": "MIAX Sapphire Exchange",
+    "clientUrl": "https://www.sapphirevtf.miaxglobal.com",
+    "smtpOptions": {
+        "emailFrom": "Trading Operations <noreply_vtf@sapphirevtf.miaxglobal.com",
+        "host": "email-smtp.us-east-1.amazonaws.com",
+        "port": 587,
+        "auth": {
+            "user": "AKIAQZQSINOXGR36PNXI",
+            "pass":"BIfcs2B2r+4gM0b9wkTgbBL9IFgz9aMVvqmk9Jim8r3M"
+        }
+    }
+}

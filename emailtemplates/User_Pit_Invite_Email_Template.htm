@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <style>
+        .container {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+        }
+
+        .button {
+            background-color: #007BFF;
+            color: white;
+            padding: 10px 20px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h2>Welcome to Your New Trading Pit!</h2>
+        <p>Hello {{first_name}},</p>
+        <p>We are excited to inform you that you have been assigned to a new trading pit.</p>
+        <p><strong>Pit Name:</strong> {{pit_name}}<br />
+            <strong>Your Role:</strong> {{pit_user_role}}
+        </p>
+        <p>If you have any questions or need assistance, please reach out to our
+            support team.</p>
+        <p>Thank you,<br />{{Your_Company}} Team</p>
+    </div>
+</body>
+
+</html>

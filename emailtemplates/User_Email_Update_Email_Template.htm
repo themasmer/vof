@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <style>
+        .container {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+        }
+
+        .button {
+            border:solid 1px #007BFF;
+            color: #007BFF;
+            padding: 10px 20px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h2>Email Address Updated</h2>
+        <p>Hello {{first_name}},</p>
+        <p>This is a confirmation that the email address for your VOF account
+            has been updated to this address.</p>
+        <p>To verify this change and confirm your updated email address, please
+            click the link below:</p>
+        <a href="{{verification_link}}" class="button">Verify Updated Email
+            Address</a>
+        <p>If you didn't request this change, please contact our support team
+            immediately to secure your account.</p>
+        <p>Thank you,<br />{{Your_Company}} Team</p>
+    </div>
+</body>
+
+</html>

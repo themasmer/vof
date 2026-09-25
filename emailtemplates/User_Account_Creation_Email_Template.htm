@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <style>
+        .container {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+        }
+
+        .button {
+            border:solid 1px #007BFF;
+            color: #007BFF;
+            padding: 10px 20px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h2>Welcome to {{Your_Company}}, {{first_name}}!</h2>
+        <p>Thank you for registering! Please verify your email address and set your password to complete your
+            registration.</p>
+
+        <p>To get started, click the link below:</p>
+        <a href="{{verification_link}}" target="_blank" class="button">Verify Email and Set Password</a>
+
+        <br />
+        <p>For all questions and concerns, contact Trading Operations at TradingOperations@miaxglobal.com or (609) 897-7302</p>
+
+        <p>Thank you,<br />{{Your_Company}} Team</p>
+    </div>
+</body>
+
+</html>

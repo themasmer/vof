@@ -1,0 +1,8 @@
+node_modules/**
+config-aws-prod.json
+config-aws-qa.json
+config.json
+jwk-meta.json
+jwk.json
+package-lock.json
+package.backup
